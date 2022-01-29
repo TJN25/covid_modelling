@@ -26,6 +26,8 @@ ui <- dashboardPage(
                        tags$h4("Number of people with covid by days (black is without any vaccine and orange in with vaccine)"),
                        plotOutput("distPlot"),
                        checkboxInput(inputId = "show_unvaccinated", label = "Show results without vaccine?", 
+                                     value = F),
+                       checkboxInput(inputId = "show_change_per_day", label = "Show number of cases per day?", 
                                      value = F)
                 ),
                 column(3,

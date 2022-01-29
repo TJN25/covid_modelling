@@ -147,25 +147,34 @@ server <- function(input, output, session) {
   })
   
   output$distPlot <- renderPlot({
+    if(input$show_change_per_day){
     if(input$show_unvaccinated == T){
       ggplot() +
         geom_point(data = main_data(), aes(x = time, y = pop))+
         geom_line(data = main_data(), aes(x = time, y = pop))+
-        # geom_point(data = vaccine_data(), aes(x = time, y = pop), color = "blue")+
-        # geom_line(data = vaccine_data(), aes(x = time, y = pop), color = "blue")+
-        geom_point(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+
-        geom_line(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+            # scale_y_continuous(trans = "log10") +
+        geom_point(data = vaccine_data_2(), aes(x = time, y = changePerDay), color = "orange")+
+        geom_line(data = vaccine_data_2(), aes(x = time, y = changePerDay), color = "orange")+            # scale_y_continuous(trans = "log10") +
         theme_bw()
     }else{
       ggplot() +
-        # geom_point(data = main_data(), aes(x = time, y = pop))+
-        # geom_line(data = main_data(), aes(x = time, y = pop))+
-        # geom_point(data = vaccine_data(), aes(x = time, y = pop), color = "blue")+
-        # geom_line(data = vaccine_data(), aes(x = time, y = pop), color = "blue")+
-        geom_point(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+
-        geom_line(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+ 
-        # scale_y_continuous(trans = "log10") +
+        geom_point(data = vaccine_data_2(), aes(x = time, y = changePerDay), color = "orange")+
+        geom_line(data = vaccine_data_2(), aes(x = time, y = changePerDay), color = "orange")+ 
         theme_bw()
+    }
+    }else{
+      if(input$show_unvaccinated == T){
+        ggplot() +
+          geom_point(data = main_data(), aes(x = time, y = pop))+
+          geom_line(data = main_data(), aes(x = time, y = pop))+
+          geom_point(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+
+          geom_line(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+            # scale_y_continuous(trans = "log10") +
+          theme_bw()
+      }else{
+        ggplot() +
+          geom_point(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+
+          geom_line(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+ 
+          theme_bw()
+      }
     }
   })
   
