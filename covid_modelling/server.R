@@ -174,7 +174,7 @@ server <- function(input, output, session) {
   # })
   output$datatab <- renderDataTable({
     
-    DT::datatable( vaccine_data())
+    DT::datatable( vaccine_data_2())
     
   })   
   
