@@ -126,13 +126,11 @@ server <- function(input, output, session) {
                  recoveryTime = input$recovery, vaccinatedPopulation = input$vaccine_pop)
     covid <- setPopulationProportions(x = covid)
     
-    total_pop <- covid@totalPopulation
+    covid@totalPopulation <- covid@totalPopulation
     infected_count <- covid@infectedCount
     ro <- covid@rO
     infected_pop <- covid@infectedPopulation
     spop <- covid@susceptiblePopulation
-    
-    
     
     vaccine_modifier <- covid@vaccineModifier
     vaccine_pop <- covid@vaccinatedPopulation
@@ -143,58 +141,9 @@ server <- function(input, output, session) {
     # print(sPopUnvaccinated)
     sPopVaccinated <- covid@susceptiblePopulationVaccinated
     # print(sPopVaccinated)
-    time_frame <- input$time_frame
-    mat <- matrix(nrow = (time_frame + incubation), ncol = 4)
-    mat[1:(time_frame + incubation), 1] <- 1:(time_frame + incubation)
-    mat[1:incubation, 2] <- infected_pop
-    mat[1:incubation, 3] <- spop
-    mat[1:incubation, 4] <- infected_pop*total_pop
-    
-    for(t in 1:time_frame){
-      if((1 - infected_pop) <= 0){
-        infected_pop <- 1
-        spop <- 0
-        mat[t,1] <- t
-        mat[t,2] <- infected_pop
-        mat[t,3] <- spop
-        mat[t,4] <- (spop*(1- vaccine_pop)*(infected_pop*ro*(1)/recovery) - infected_pop*1/recovery + spop*vaccine_pop*(infected_pop*vaccine_modifier*ro*(1)/recovery) - infected_pop*1/recovery)*total_pop
-        next
-      }
-      if((1 - infected_pop) >= 1){
-        infected_pop <- 0
-        spop <- 1
-        mat[t,1] <- t
-        mat[t,2] <- infected_pop
-        mat[t,3] <- spop
-        mat[t,4] <- (spop*(1- vaccine_pop)*(infected_pop*ro*(1)/recovery) - infected_pop*1/recovery + spop*vaccine_pop*(infected_pop*vaccine_modifier*ro*(1)/recovery) - infected_pop*1/recovery)*total_pop
-        next
-      }
-      mat[t,1] <- t
-      mat[(t + incubation),2] <- infected_pop
-      mat[(t + incubation),3] <- spop
-      mat[(t + incubation),4] <- (infected_pop + (spop*(1- vaccine_pop)*(infected_pop*ro*(1)/recovery) - infected_pop*1/recovery + spop*vaccine_pop*(infected_pop*vaccine_modifier*ro*(1)/recovery) - infected_pop*1/recovery))*total_pop
-      infected_pop_1 <- infected_pop
-      
-      infected_pop <-  infected_pop + spop*(1- vaccine_pop)*(infected_pop*ro*(1)/recovery) - infected_pop*1/recovery + spop*vaccine_pop*(infected_pop*vaccine_modifier*ro*(1)/recovery) - infected_pop*1/recovery
-      sPopUnvaccinated <- sPopUnvaccinated - sPopUnvaccinated*(infected_pop_1*ro*(1)/recovery)
-      print(infected_pop_1)
-      print(sPopUnvaccinated)
-      # print(sPopUnvaccinated)
-      # print(ro)
-      # print(recovery)
-      sPopVaccinated <-  sPopVaccinated - sPopVaccinated*(infected_pop_1*vaccine_modifier*ro*(1)/recovery)
-      print(sPopVaccinated)
-      
-      spop <- sPopUnvaccinated + sPopVaccinated
-      
-      # infected_pop <-  0.3670886 + spop*(1- vaccine_pop)*(0.3670886*ro*(1)/8) - 0.3670886*1/8 + spop*vaccine_pop*(0.3670886*vaccine_modifier*ro*(1)/8) - 0.3670886*1/8
-      
-    }
-    
-    dat <- as.data.frame(mat)
-    
-    colnames(dat) <- c("time", "infected", "susceptible", "pop")
-    dat
+    timeFrame <- input$time_frame
+    covidTimeData <- covidTimeDataSetup(covid, timeFrame)
+    covidSpreading(covid, timeFrame, covidTimeData)
   })
   
   output$distPlot <- renderPlot({
