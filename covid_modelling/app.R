@@ -1,0 +1,978 @@
+#
+
+options(warn = -1)
+##the tidy up of the reps when looking at multiple categories is not working
+##setup ####
+library(shiny)
+library(ggplot2)
+library(viridis)
+library(RColorBrewer)
+library(stringr)
+library(plyr)
+library(devtools)
+library(dplyr)
+library(tidyr)
+library(shinyjs)
+library(shinyWidgets)
+library(DT)
+library(lubridate)
+library(rdrop2)
+library(reshape2)
+library(shinyjqui)
+library(english)
+library(shinydashboard)
+library(markovchain)
+
+
+
+
+
+# Define UI for application that draws a histogram
+
+ui <- dashboardPage(
+    
+    # header ------------------------------------------------------------------
+    dashboardHeader(title = "Modelling"),
+    
+    # sidebar -----------------------------------------------------------------
+    
+    
+    dashboardSidebar(width = 350,
+                     sidebarMenu(id = "tabs",
+                                 menuItem("Covid modelling", tabName = "covid_modelling", icon = icon("th")),
+                                 menuItem("The Chase", tabName = "the_chase", icon = icon("th"))
+                     )
+    ),
+    
+    # body --------------------------------------------------------------------
+    
+    
+    dashboardBody(
+        
+        tabItems(
+            tabItem(tabName = "covid_modelling",
+                    
+                    fluidRow(
+                        column(7,
+                               tags$h4("Number of people with covid by days (black is without any vaccine and orange in with vaccine)"),
+                               plotOutput("distPlot"),
+                               checkboxInput(inputId = "show_unvaccinated", label = "Show results without vaccine?", 
+                                            value = F)
+                        ),
+                        column(3,
+                               sliderInput("total_pop",
+                                           "Population:",
+                                           min = 1000000,
+                                           max = 1000000000,
+                                           value = 5000000,
+                                           step = 1000000),
+                               sliderInput("infected_count",
+                                           "Infected:",
+                                           min = 1,
+                                           max = 200,
+                                           value = 5,
+                                           step = 1),
+                               sliderInput("vaccine_modifier",
+                                           "Vaccine Efficacy:",
+                                           min = 0,
+                                           max = 1,
+                                           value = 0.9,
+                                           step = 0.05),
+                               sliderInput("vaccine_pop",
+                                           "Proportion of Population Vaccinated:",
+                                           min = 0,
+                                           max = 1,
+                                           value = 0.7,
+                                           step = 0.05),
+                               sliderInput("ro",
+                                           "R 0:",
+                                           min = 0.1,
+                                           max = 10,
+                                           value = 4,
+                                           step = 0.1),
+                               sliderInput("recovery",
+                                           "Infectivity period (days):",
+                                           min = 1,
+                                           max = 30,
+                                           value = 8,
+                                           step = 1),
+                               sliderInput("incubation",
+                                           "Incubation period (days):",
+                                           min = 1,
+                                           max = 30,
+                                           value = 4,
+                                           step = 1),
+                               sliderInput("time_frame",
+                                           "Number of days to view:",
+                                           min = 1,
+                                           max = 500,
+                                           value = 15,
+                                           step = 1)
+                        )
+                    ),
+                    
+                    tags$h4("Data showing values for the no vaccine graph"),
+                    
+                               dataTableOutput(outputId = "datatab")
+
+                     
+                   ),
+            tabItem(tabName = "the_chase",
+                    fluidRow(
+                        column(7,
+                               tags$h4("Probability of winning or losing at the Chase based on the decision made"),
+                               plotOutput("chaseplot"),
+                               plotOutput("expectedReturnsOffer")
+                        ),
+                        column(3,
+                               sliderInput("chaserprob",
+                                           "Probability Chaser gets question correct:",
+                                           min = 0,
+                                           max = 1,
+                                           value = 0.95,
+                                           step = 0.01),
+                               sliderInput("playerprob",
+                                           "Probability Player gets question correct:",
+                                           min = 0,
+                                           max = 1,
+                                           value = 0.66,
+                                           step = 0.01),
+                               sliderInput("skillmodifier",
+                                           "Adjusted Probability based on offer:",
+                                           min = 0,
+                                           max = 1,
+                                           value = 0.05,
+                                           step = 0.01),
+                               sliderInput("chaserstart",
+                                           "Chaser start position:",
+                                           min = 3,
+                                           max = 20,
+                                           value = 8,
+                                           step = 1),
+                               sliderInput("playerstart",
+                                           "Player start position (default):",
+                                           min = 1,
+                                           max = 18,
+                                           value = 5,
+                                           step = 1),
+                               sliderInput("moneyaway",
+                                           "Offer for stepping away from the Chaser:",
+                                           min = -500,
+                                           max = 10000,
+                                           value = 1000,
+                                           step = 100),
+                               sliderInput("moneystay",
+                                           "Money earned:",
+                                           min = 0,
+                                           max = 20000,
+                                           value = 4000,
+                                           step = 1000),
+                               sliderInput("moneycloser",
+                                           "Offer for stepping closer to the Chaser:",
+                                           min = 0,
+                                           max = 100000,
+                                           value = 20000,
+                                           step = 500)
+                        )
+                    ),
+                    dataTableOutput(outputId = "chasetable")
+            )
+                    # plotOutput("hours_plot", click = "hours_plot_click", dblclick = "hours_plot_dbclick", hover = "hours_plot_hover")
+        )
+    )
+)
+
+
+
+# Define server logic required to draw a histogram
+server <- function(input, output, session) {
+
+# covid vaccine data ------------------------------------------------------
+
+    main_data <- reactive({
+        
+        total_pop <- input$total_pop
+        infected_count <- input$infected_count
+        ro <- input$ro
+        infected_pop <- infected_count/total_pop
+        spop <- 1 - infected_pop
+        # vaccine_modifier <- 0.15
+        # vaccine_pop <- 0.7
+        incubation <- input$incubation
+        recovery <- input$recovery
+        
+        time_frame <- input$time_frame
+        mat <- matrix(nrow = (time_frame + incubation), ncol = 4)
+        mat[1:(time_frame + incubation), 1] <- 1:(time_frame + incubation)
+        mat[1:incubation, 2] <- infected_pop
+        mat[1:incubation, 3] <- spop
+        mat[1:incubation, 4] <- infected_pop*total_pop
+        
+        for(t in 1:time_frame){
+            # if((1 - infected_pop) <= 0){
+            #     infected_pop <- 1
+            #     spop <- 0
+            #     mat[t,1] <- t
+            #     mat[t,2] <- infected_pop
+            #     mat[t,3] <- spop
+            #     mat[t,4] <- infected_pop*total_pop
+            #     next
+            # }
+            # if((1 - infected_pop) >= 1){
+            #   infected_pop <- 0
+            #   spop <- 1
+            #   mat[t,1] <- t
+            #   mat[t,2] <- infected_pop
+            #   mat[t,3] <- spop
+            #   mat[t,4] <- infected_pop*total_pop
+            #   next
+            # }
+            mat[t,1] <- t
+            mat[(t + incubation),2] <- infected_pop
+            mat[(t + incubation),3] <- spop
+            mat[(t + incubation),4] <- (infected_pop + (spop*infected_pop*ro*(1)/recovery - infected_pop*1/recovery))*total_pop
+            infected_pop_1 <- infected_pop
+            infected_pop <-  infected_pop + spop*infected_pop*ro*(1)/recovery - infected_pop*1/recovery
+            
+            spop <- spop - (spop*infected_pop_1*ro*(1)/recovery)
+            
+            
+        }
+        
+        dat <- as.data.frame(mat)
+        
+        colnames(dat) <- c("time", "infected", "susceptible", "pop")
+        dat
+    })
+
+    vaccine_data <- reactive({
+        
+        total_pop <- input$total_pop
+        infected_count <- input$infected_count
+        ro <- input$ro
+        infected_pop <- infected_count/total_pop
+        spop <- 1 - infected_pop
+        vaccine_modifier <- 1 - input$vaccine_modifier
+        vaccine_pop <- input$vaccine_pop
+        incubation <- input$incubation
+        recovery <- input$recovery
+        
+        time_frame <- input$time_frame
+        mat <- matrix(nrow = (time_frame + incubation), ncol = 4)
+        mat[1:(time_frame + incubation), 1] <- 1:(time_frame + incubation)
+        mat[1:incubation, 2] <- infected_pop
+        mat[1:incubation, 3] <- spop
+        mat[1:incubation, 4] <- infected_pop*total_pop
+        
+        for(t in 1:time_frame){
+            if((1 - infected_pop) <= 0){
+                infected_pop <- 1
+                spop <- 0
+                mat[t,1] <- t
+                mat[t,2] <- infected_pop
+                mat[t,3] <- spop
+                mat[t,4] <- infected_pop*total_pop
+                next
+            }
+            if((1 - infected_pop) >= 1){
+              infected_pop <- 0
+              spop <- 1
+              mat[t,1] <- t
+              mat[t,2] <- infected_pop
+              mat[t,3] <- spop
+              mat[t,4] <- infected_pop*total_pop
+              next
+            }
+            mat[t,1] <- t
+            mat[(t + incubation),2] <- infected_pop
+            mat[(t + incubation),3] <- spop
+            mat[(t + incubation),4] <- infected_pop*total_pop
+            infected_pop_1 <- infected_pop
+            infected_pop <-  infected_pop + spop*(1- vaccine_pop)*(infected_pop*ro*(1)/recovery) - infected_pop*1/recovery + spop*vaccine_pop*(infected_pop*vaccine_modifier*ro*(1)/recovery) - infected_pop*1/recovery
+            # print(infected_pop_1)
+            # print(spop)
+            # print(ro)
+            # print(recovery)
+            # spop <- 1 - infected_pop
+            spop <- spop - (spop*infected_pop_1*ro*(1)/recovery)
+            
+            # infected_pop <-  0.12 + 9.661893e-09*(0.12*4*(1)/8 - 0.12*1/8)*(1- 0.7) + 9.661893e-09*(0.12*0.1*4*(1)/8 - 0.12*1/8)*0.7
+            
+        }
+        
+        dat <- as.data.frame(mat)
+        
+        colnames(dat) <- c("time", "infected", "susceptible", "pop")
+        dat
+    })
+    
+    vaccine_data_2 <- reactive({
+        
+        total_pop <- input$total_pop
+        infected_count <- input$infected_count
+        ro <- input$ro
+        infected_pop <- infected_count/total_pop
+        spop <- 1 - infected_pop
+        
+        
+        
+        vaccine_modifier <- 1 - input$vaccine_modifier
+        vaccine_pop <- input$vaccine_pop
+        incubation <- input$incubation
+        recovery <- input$recovery
+        
+        sPopUnvaccinated <- 1*(1-vaccine_pop) - infected_pop
+        # print(sPopUnvaccinated)
+        sPopVaccinated <- 1 - infected_pop - sPopUnvaccinated
+        # print(sPopVaccinated)
+        time_frame <- input$time_frame
+        mat <- matrix(nrow = (time_frame + incubation), ncol = 4)
+        mat[1:(time_frame + incubation), 1] <- 1:(time_frame + incubation)
+        mat[1:incubation, 2] <- infected_pop
+        mat[1:incubation, 3] <- spop
+        mat[1:incubation, 4] <- infected_pop*total_pop
+        
+        for(t in 1:time_frame){
+            if((1 - infected_pop) <= 0){
+                infected_pop <- 1
+                spop <- 0
+                mat[t,1] <- t
+                mat[t,2] <- infected_pop
+                mat[t,3] <- spop
+                mat[t,4] <- (spop*(1- vaccine_pop)*(infected_pop*ro*(1)/recovery) - infected_pop*1/recovery + spop*vaccine_pop*(infected_pop*vaccine_modifier*ro*(1)/recovery) - infected_pop*1/recovery)*total_pop
+                next
+            }
+            if((1 - infected_pop) >= 1){
+                infected_pop <- 0
+                spop <- 1
+                mat[t,1] <- t
+                mat[t,2] <- infected_pop
+                mat[t,3] <- spop
+                mat[t,4] <- (spop*(1- vaccine_pop)*(infected_pop*ro*(1)/recovery) - infected_pop*1/recovery + spop*vaccine_pop*(infected_pop*vaccine_modifier*ro*(1)/recovery) - infected_pop*1/recovery)*total_pop
+                next
+            }
+            mat[t,1] <- t
+            mat[(t + incubation),2] <- infected_pop
+            mat[(t + incubation),3] <- spop
+            mat[(t + incubation),4] <- (infected_pop + (spop*(1- vaccine_pop)*(infected_pop*ro*(1)/recovery) - infected_pop*1/recovery + spop*vaccine_pop*(infected_pop*vaccine_modifier*ro*(1)/recovery) - infected_pop*1/recovery))*total_pop
+            infected_pop_1 <- infected_pop
+            
+            infected_pop <-  infected_pop + spop*(1- vaccine_pop)*(infected_pop*ro*(1)/recovery) - infected_pop*1/recovery + spop*vaccine_pop*(infected_pop*vaccine_modifier*ro*(1)/recovery) - infected_pop*1/recovery
+            sPopUnvaccinated <- sPopUnvaccinated - sPopUnvaccinated*(infected_pop_1*ro*(1)/recovery)
+            print(infected_pop_1)
+            print(sPopUnvaccinated)
+            # print(sPopUnvaccinated)
+            # print(ro)
+            # print(recovery)
+            sPopVaccinated <-  sPopVaccinated - sPopVaccinated*(infected_pop_1*vaccine_modifier*ro*(1)/recovery)
+            print(sPopVaccinated)
+            
+            spop <- sPopUnvaccinated + sPopVaccinated
+            
+            # infected_pop <-  0.3670886 + spop*(1- vaccine_pop)*(0.3670886*ro*(1)/8) - 0.3670886*1/8 + spop*vaccine_pop*(0.3670886*vaccine_modifier*ro*(1)/8) - 0.3670886*1/8
+            
+        }
+        
+        dat <- as.data.frame(mat)
+        
+        colnames(dat) <- c("time", "infected", "susceptible", "pop")
+        dat
+    })
+    
+    output$distPlot <- renderPlot({
+        if(input$show_unvaccinated == T){
+        ggplot() +
+            geom_point(data = main_data(), aes(x = time, y = pop))+
+            geom_line(data = main_data(), aes(x = time, y = pop))+
+            # geom_point(data = vaccine_data(), aes(x = time, y = pop), color = "blue")+
+            # geom_line(data = vaccine_data(), aes(x = time, y = pop), color = "blue")+
+            geom_point(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+
+            geom_line(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+            # scale_y_continuous(trans = "log10") +
+            theme_bw()
+        }else{
+            ggplot() +
+                # geom_point(data = main_data(), aes(x = time, y = pop))+
+                # geom_line(data = main_data(), aes(x = time, y = pop))+
+                # geom_point(data = vaccine_data(), aes(x = time, y = pop), color = "blue")+
+                # geom_line(data = vaccine_data(), aes(x = time, y = pop), color = "blue")+
+                geom_point(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+
+                geom_line(data = vaccine_data_2(), aes(x = time, y = pop), color = "orange")+ 
+                # scale_y_continuous(trans = "log10") +
+                theme_bw()
+        }
+    })
+    
+    # output$datatab <- renderTable({
+    #     main_data()
+    # })
+    output$datatab <- renderDataTable({
+        
+        DT::datatable( vaccine_data())
+        
+    })   
+    
+
+# the chase data ----------------------------------------------------------
+
+ 
+    chaseprobabilityByPosition <- reactive({
+        pChaser <- input$chaserprob
+        pPlayer <- input$playerprob
+        
+        pBothMove <- pPlayer*pChaser
+        pChaserMove <- (1 - pPlayer)*pChaser
+        pPlayerMove <- pPlayer*(1 - pChaser)
+        pNoMove <- (1 - pPlayer)*(1 - pChaser)
+        steps <- 1000
+        chaserstart <- input$chaserstart
+        playerstart <- input$playerstart
+        
+        states <- c(1:((chaserstart + 2)*(playerstart + 3)))
+        
+        statesDat <- data.frame(states = states, chaser_coord = 1, player_coord = 1, game_state = "playing")
+        
+        # current_state <- mat[chaser, player]
+        i <- 0
+        for(chaser in chaserstart:-1){
+            for(player in -1:(playerstart + 1)){
+                i <-  i+1
+                statesDat$chaser_coord[i] <- chaser
+                statesDat$player_coord[i] <- player
+            }
+        }
+        
+        statesDat <- statesDat %>% mutate(game_state = ifelse(chaser_coord == 0, "lose", ifelse(player_coord == 0, "win", "playing")))
+        statesDat <- statesDat %>% mutate(labels = paste(player_coord, chaser_coord, sep = ",")) %>% 
+            arrange(-player_coord, -chaser_coord)
+        
+        mat <- matrix(nrow = nrow(statesDat), ncol = nrow(statesDat))
+        
+        colnames(mat) <- statesDat$labels
+        rownames(mat) <- statesDat$labels
+        
+        i <- 1
+        j <- 1
+        for(i in 1:nrow(mat)){
+            current_state <- rownames(mat)[i]
+            playerPos <- statesDat$player_coord[statesDat$labels == current_state]
+            chaserPos <- statesDat$chaser_coord[statesDat$labels == current_state]
+            if(chaserPos == 0){
+                mat[i,i] <- 1
+                next
+            }
+            if(playerPos == 0){
+                mat[i,i] <- 1
+                next
+            }
+            for(j in 1:nrow(mat)){
+                change_state <- colnames(mat)[j]
+                chaserChangePos  <- statesDat$chaser_coord[statesDat$labels == change_state]
+                playerChangePos <- statesDat$player_coord[statesDat$labels == change_state]
+                
+                if(playerPos == playerChangePos){
+                    if((chaserPos - chaserChangePos) == 1){
+                        #chaser got question correct
+                        mat[i,j] <- pChaserMove
+                    }else if(chaserPos == chaserChangePos){
+                        #chaser got question wrong
+                        mat[i,j] <- pNoMove
+                    }
+                }else if((playerPos-playerChangePos) == 1){
+                    if((chaserPos - chaserChangePos) == -1){
+                        #chaser got question wrong
+                        mat[i,j] <- pPlayerMove
+                    }else if(chaserPos == chaserChangePos){
+                        #chaser got question correct
+                        mat[i,j] <- pBothMove
+                        
+                    }
+                }
+            }
+        }
+        
+        mat[is.na(mat)] <- 0
+        
+        dat <- as.data.frame(mat)
+        
+        dat$sums <- rowSums(dat)
+        dat <- dat %>% filter(sums == 1)
+        
+        trans_mat <- as.matrix(dat[,-ncol(dat)])
+        
+        #chaser cannot be more steps behind the player than available steps (8)
+        statesDat <- statesDat %>% filter(chaser_coord <= chaserstart, player_coord <= (playerstart + 1), player_coord >= 0, chaser_coord >= 0) %>% mutate(keep_label = ifelse((chaserstart - player_coord)  < chaser_coord, F, T)) %>%
+            filter(keep_label)
+        
+        trans_mat <- trans_mat[rownames(trans_mat) %in% statesDat$labels,colnames(trans_mat) %in% statesDat$labels]
+        disc_trans <- new("markovchain",transitionMatrix=trans_mat, states=statesDat$labels, name="MC 1") 
+        
+        getProbabilitiesFromMarkovChain <- function(disc_trans, playerstart, chaserstart, statesDat, steps = 1000){
+            statelabels <- statesDat$labels
+            current_state <- statelabels
+            current_state[current_state == paste(playerstart, chaserstart - playerstart, sep = ",")] <- 1
+            current_state[current_state != "1"] <- 0
+            current_state <- as.numeric(current_state)
+            finalState<-current_state*disc_trans^steps
+            
+            #get steady states 
+            results <- colSums(finalState)
+            results <- as.data.frame(results)
+            results$labels <- rownames(results)
+            statesDat <- statesDat %>% full_join(results)
+            outcomes <- statesDat %>% select(game_state, labels, results) %>% dplyr::rename(prob = results)
+            probres <- outcomes %>% group_by(game_state) %>% dplyr::summarise(prob_win = sum(prob))
+            # print(probres)
+            return(probres)
+        }
+        probres <- data.frame(game_state = NA, prob_win = NA, pos_player = NA, pos_chaser = NA)
+        for(i in 1:input$playerstart){
+            for(j in 1:input$chaserstart ){
+                probresTmp <- getProbabilitiesFromMarkovChain(disc_trans = disc_trans, playerstart = i, chaserstart = j, statesDat = statesDat)
+                probresTmp <- probresTmp  %>% mutate(pos_player = i, pos_chaser = j)
+                probres <- probres %>% bind_rows(probresTmp)
+            }
+        }
+        probresSetup <- probres %>% filter(game_state == "win") %>% select(pos_player, pos_chaser, prob_win)
+        probresCast <- reshape2::acast(data = probresSetup, formula = pos_player ~ pos_chaser)
+        probresCast <- round(probresCast, 3)
+        probresCast
+    })
+    
+    chaseprobability <- reactive({
+        pChaser <- input$chaserprob
+        pPlayer <- input$playerprob
+        
+        pBothMove <- pPlayer*pChaser
+        pChaserMove <- (1 - pPlayer)*pChaser
+        pPlayerMove <- pPlayer*(1 - pChaser)
+        pNoMove <- (1 - pPlayer)*(1 - pChaser)
+        steps <- 1000
+        chaserstart <- input$chaserstart
+        playerstart <- input$playerstart
+        
+        states <- c(1:((chaserstart + 2)*(playerstart + 3)))
+        
+        statesDat <- data.frame(states = states, chaser_coord = 1, player_coord = 1, game_state = "playing")
+        
+        # current_state <- mat[chaser, player]
+        i <- 0
+        for(chaser in chaserstart:-1){
+            for(player in -1:(playerstart + 1)){
+                i <-  i+1
+                statesDat$chaser_coord[i] <- chaser
+                statesDat$player_coord[i] <- player
+            }
+        }
+        
+        statesDat <- statesDat %>% mutate(game_state = ifelse(chaser_coord == 0, "lose", ifelse(player_coord == 0, "win", "playing")))
+        statesDat <- statesDat %>% mutate(labels = paste(player_coord, chaser_coord, sep = ",")) %>% 
+            arrange(-player_coord, -chaser_coord)
+        
+        mat <- matrix(nrow = nrow(statesDat), ncol = nrow(statesDat))
+        
+        colnames(mat) <- statesDat$labels
+        rownames(mat) <- statesDat$labels
+        
+        i <- 1
+        j <- 1
+        for(i in 1:nrow(mat)){
+            current_state <- rownames(mat)[i]
+            playerPos <- statesDat$player_coord[statesDat$labels == current_state]
+            chaserPos <- statesDat$chaser_coord[statesDat$labels == current_state]
+            if(chaserPos == 0){
+                mat[i,i] <- 1
+                next
+            }
+            if(playerPos == 0){
+                mat[i,i] <- 1
+                next
+            }
+            for(j in 1:nrow(mat)){
+                change_state <- colnames(mat)[j]
+                chaserChangePos  <- statesDat$chaser_coord[statesDat$labels == change_state]
+                playerChangePos <- statesDat$player_coord[statesDat$labels == change_state]
+                
+                if(playerPos == playerChangePos){
+                    if((chaserPos - chaserChangePos) == 1){
+                        #chaser got question correct
+                        mat[i,j] <- pChaserMove
+                    }else if(chaserPos == chaserChangePos){
+                        #chaser got question wrong
+                        mat[i,j] <- pNoMove
+                    }
+                }else if((playerPos-playerChangePos) == 1){
+                    if((chaserPos - chaserChangePos) == -1){
+                        #chaser got question wrong
+                        mat[i,j] <- pPlayerMove
+                    }else if(chaserPos == chaserChangePos){
+                        #chaser got question correct
+                        mat[i,j] <- pBothMove
+                        
+                    }
+                }
+            }
+        }
+        
+        mat[is.na(mat)] <- 0
+    
+        dat <- as.data.frame(mat)
+        
+        dat$sums <- rowSums(dat)
+        dat <- dat %>% filter(sums == 1)
+        
+        trans_mat <- as.matrix(dat[,-ncol(dat)])
+        
+        #chaser cannot be more steps behind the player than available steps (8)
+        statesDat <- statesDat %>% filter(chaser_coord <= chaserstart, player_coord <= (playerstart + 1), player_coord >= 0, chaser_coord >= 0) %>% mutate(keep_label = ifelse((chaserstart - player_coord)  < chaser_coord, F, T)) %>%
+            filter(keep_label)
+        
+        trans_mat <- trans_mat[rownames(trans_mat) %in% statesDat$labels,colnames(trans_mat) %in% statesDat$labels]
+        disc_trans <- new("markovchain",transitionMatrix=trans_mat, states=statesDat$labels, name="MC 1") 
+        
+        getProbabilitiesFromMarkovChain <- function(disc_trans, playerstart, chaserstart, statesDat, steps = 1000){
+        statelabels <- statesDat$labels
+        current_state <- statelabels
+        current_state[current_state == paste(playerstart, chaserstart - playerstart, sep = ",")] <- 1
+        current_state[current_state != "1"] <- 0
+        current_state <- as.numeric(current_state)
+        finalState<-current_state*disc_trans^steps
+        
+        #get steady states 
+        results <- colSums(finalState)
+        results <- as.data.frame(results)
+        results$labels <- rownames(results)
+        statesDat <- statesDat %>% full_join(results)
+        outcomes <- statesDat %>% select(game_state, labels, results) %>% dplyr::rename(prob = results)
+        probres <- outcomes %>% group_by(game_state) %>% dplyr::summarise(prob_win = sum(prob))
+        # print(probres)
+        return(probres)
+    }
+        probresStay <- getProbabilitiesFromMarkovChain(disc_trans = disc_trans, playerstart = input$playerstart, chaserstart = input$chaserstart, statesDat = statesDat)
+        probresClose <- getProbabilitiesFromMarkovChain(disc_trans = disc_trans, playerstart = input$playerstart + 1, chaserstart = input$chaserstart, statesDat = statesDat)
+        probresAway <- getProbabilitiesFromMarkovChain(disc_trans = disc_trans, playerstart = input$playerstart - 1, chaserstart = input$chaserstart, statesDat = statesDat)
+        
+        probresStay <- probresStay %>% mutate(position = "Stayed")
+        probresClose <- probresClose %>% mutate(position = "Closer to Chaser")
+        probresAway <- probresAway %>% mutate(position = "Further from Chaser")
+        # print(probresClose)
+        probres <- probresStay %>% bind_rows(probresAway) %>% bind_rows(probresClose) %>% filter(game_state != "playing")
+        probres
+        })
+    chaseprobabilitycloser <- reactive({
+        pChaser <- input$chaserprob
+        pPlayer <- input$playerprob + input$skillmodifier
+        
+        pBothMove <- (pPlayer)*pChaser
+        pChaserMove <- (1 - pPlayer)*pChaser
+        pPlayerMove <- pPlayer*(1 - pChaser)
+        pNoMove <- (1 - pPlayer)*(1 - pChaser)
+        steps <- 1000
+        chaserstart <- input$chaserstart
+        playerstart <- input$playerstart
+        
+        states <- c(1:((chaserstart + 2)*(playerstart + 3)))
+        
+        statesDat <- data.frame(states = states, chaser_coord = 1, player_coord = 1, game_state = "playing")
+        
+        # current_state <- mat[chaser, player]
+        i <- 0
+        for(chaser in chaserstart:-1){
+            for(player in -1:(playerstart + 1)){
+                i <-  i+1
+                statesDat$chaser_coord[i] <- chaser
+                statesDat$player_coord[i] <- player
+            }
+        }
+        
+        statesDat <- statesDat %>% mutate(game_state = ifelse(chaser_coord == 0, "lose", ifelse(player_coord == 0, "win", "playing")))
+        statesDat <- statesDat %>% mutate(labels = paste(player_coord, chaser_coord, sep = ",")) %>% 
+            arrange(-player_coord, -chaser_coord)
+        
+        mat <- matrix(nrow = nrow(statesDat), ncol = nrow(statesDat))
+        
+        colnames(mat) <- statesDat$labels
+        rownames(mat) <- statesDat$labels
+        
+        i <- 1
+        j <- 1
+        for(i in 1:nrow(mat)){
+            current_state <- rownames(mat)[i]
+            playerPos <- statesDat$player_coord[statesDat$labels == current_state]
+            chaserPos <- statesDat$chaser_coord[statesDat$labels == current_state]
+            if(chaserPos == 0){
+                mat[i,i] <- 1
+                next
+            }
+            if(playerPos == 0){
+                mat[i,i] <- 1
+                next
+            }
+            for(j in 1:nrow(mat)){
+                change_state <- colnames(mat)[j]
+                chaserChangePos  <- statesDat$chaser_coord[statesDat$labels == change_state]
+                playerChangePos <- statesDat$player_coord[statesDat$labels == change_state]
+                
+                if(playerPos == playerChangePos){
+                    if((chaserPos - chaserChangePos) == 1){
+                        #chaser got question correct
+                        mat[i,j] <- pChaserMove
+                    }else if(chaserPos == chaserChangePos){
+                        #chaser got question wrong
+                        mat[i,j] <- pNoMove
+                    }
+                }else if((playerPos-playerChangePos) == 1){
+                    if((chaserPos - chaserChangePos) == -1){
+                        #chaser got question wrong
+                        mat[i,j] <- pPlayerMove
+                    }else if(chaserPos == chaserChangePos){
+                        #chaser got question correct
+                        mat[i,j] <- pBothMove
+                        
+                    }
+                }
+            }
+        }
+        
+        mat[is.na(mat)] <- 0
+        
+        dat <- as.data.frame(mat)
+        
+        dat$sums <- rowSums(dat)
+        dat <- dat %>% filter(sums == 1)
+        
+        trans_mat <- as.matrix(dat[,-ncol(dat)])
+        
+        #chaser cannot be more steps behind the player than available steps (8)
+        statesDat <- statesDat %>% filter(chaser_coord <= chaserstart, player_coord <= (playerstart + 1), player_coord >= 0, chaser_coord >= 0) %>% mutate(keep_label = ifelse((chaserstart - player_coord)  < chaser_coord, F, T)) %>%
+            filter(keep_label)
+        
+        trans_mat <- trans_mat[rownames(trans_mat) %in% statesDat$labels,colnames(trans_mat) %in% statesDat$labels]
+        disc_trans <- new("markovchain",transitionMatrix=trans_mat, states=statesDat$labels, name="MC 1") 
+        
+        getProbabilitiesFromMarkovChain <- function(disc_trans, playerstart, chaserstart, statesDat, steps = 1000){
+            statelabels <- statesDat$labels
+            current_state <- statelabels
+            current_state[current_state == paste(playerstart, chaserstart - playerstart, sep = ",")] <- 1
+            current_state[current_state != "1"] <- 0
+            current_state <- as.numeric(current_state)
+            finalState<-current_state*disc_trans^steps
+            
+            #get steady states 
+            results <- colSums(finalState)
+            results <- as.data.frame(results)
+            results$labels <- rownames(results)
+            statesDat <- statesDat %>% full_join(results)
+            outcomes <- statesDat %>% select(game_state, labels, results) %>% dplyr::rename(prob = results)
+            probres <- outcomes %>% group_by(game_state) %>% dplyr::summarise(prob_win = sum(prob))
+            # print(probres)
+            return(probres)
+        }
+        probresStay <- getProbabilitiesFromMarkovChain(disc_trans = disc_trans, playerstart = input$playerstart, chaserstart = input$chaserstart, statesDat = statesDat)
+        probresClose <- getProbabilitiesFromMarkovChain(disc_trans = disc_trans, playerstart = input$playerstart + 1, chaserstart = input$chaserstart, statesDat = statesDat)
+        probresAway <- getProbabilitiesFromMarkovChain(disc_trans = disc_trans, playerstart = input$playerstart - 1, chaserstart = input$chaserstart, statesDat = statesDat)
+        
+        probresStay <- probresStay %>% mutate(position = "Stayed")
+        probresClose <- probresClose %>% mutate(position = "Closer to Chaser")
+        probresAway <- probresAway %>% mutate(position = "Further from Chaser")
+        # print(probresClose)
+        probres <- probresStay %>% bind_rows(probresAway) %>% bind_rows(probresClose) %>% filter(game_state != "playing")
+        probres
+    })
+    chaseprobabilityaway <- reactive({
+        pChaser <- input$chaserprob
+        pPlayer <- input$playerprob - input$skillmodifier
+        
+        pBothMove <- pPlayer*pChaser
+        pChaserMove <- (1 - pPlayer)*pChaser
+        pPlayerMove <- pPlayer*(1 - pChaser)
+        pNoMove <- (1 - pPlayer)*(1 - pChaser)
+        steps <- 1000
+        chaserstart <- input$chaserstart
+        playerstart <- input$playerstart
+        
+        states <- c(1:((chaserstart + 2)*(playerstart + 3)))
+        
+        statesDat <- data.frame(states = states, chaser_coord = 1, player_coord = 1, game_state = "playing")
+        
+        # current_state <- mat[chaser, player]
+        i <- 0
+        for(chaser in chaserstart:-1){
+            for(player in -1:(playerstart + 1)){
+                i <-  i+1
+                statesDat$chaser_coord[i] <- chaser
+                statesDat$player_coord[i] <- player
+            }
+        }
+        
+        statesDat <- statesDat %>% mutate(game_state = ifelse(chaser_coord == 0, "lose", ifelse(player_coord == 0, "win", "playing")))
+        statesDat <- statesDat %>% mutate(labels = paste(player_coord, chaser_coord, sep = ",")) %>% 
+            arrange(-player_coord, -chaser_coord)
+        
+        mat <- matrix(nrow = nrow(statesDat), ncol = nrow(statesDat))
+        
+        colnames(mat) <- statesDat$labels
+        rownames(mat) <- statesDat$labels
+        
+        i <- 1
+        j <- 1
+        for(i in 1:nrow(mat)){
+            current_state <- rownames(mat)[i]
+            playerPos <- statesDat$player_coord[statesDat$labels == current_state]
+            chaserPos <- statesDat$chaser_coord[statesDat$labels == current_state]
+            if(chaserPos == 0){
+                mat[i,i] <- 1
+                next
+            }
+            if(playerPos == 0){
+                mat[i,i] <- 1
+                next
+            }
+            for(j in 1:nrow(mat)){
+                change_state <- colnames(mat)[j]
+                chaserChangePos  <- statesDat$chaser_coord[statesDat$labels == change_state]
+                playerChangePos <- statesDat$player_coord[statesDat$labels == change_state]
+                
+                if(playerPos == playerChangePos){
+                    if((chaserPos - chaserChangePos) == 1){
+                        #chaser got question correct
+                        mat[i,j] <- pChaserMove
+                    }else if(chaserPos == chaserChangePos){
+                        #chaser got question wrong
+                        mat[i,j] <- pNoMove
+                    }
+                }else if((playerPos-playerChangePos) == 1){
+                    if((chaserPos - chaserChangePos) == -1){
+                        #chaser got question wrong
+                        mat[i,j] <- pPlayerMove
+                    }else if(chaserPos == chaserChangePos){
+                        #chaser got question correct
+                        mat[i,j] <- pBothMove
+                        
+                    }
+                }
+            }
+        }
+        
+        mat[is.na(mat)] <- 0
+        
+        dat <- as.data.frame(mat)
+        
+        dat$sums <- rowSums(dat)
+        dat <- dat %>% filter(sums == 1)
+        
+        trans_mat <- as.matrix(dat[,-ncol(dat)])
+        
+        #chaser cannot be more steps behind the player than available steps (8)
+        statesDat <- statesDat %>% filter(chaser_coord <= chaserstart, player_coord <= (playerstart + 1), player_coord >= 0, chaser_coord >= 0) %>% mutate(keep_label = ifelse((chaserstart - player_coord)  < chaser_coord, F, T)) %>%
+            filter(keep_label)
+        
+        trans_mat <- trans_mat[rownames(trans_mat) %in% statesDat$labels,colnames(trans_mat) %in% statesDat$labels]
+        disc_trans <- new("markovchain",transitionMatrix=trans_mat, states=statesDat$labels, name="MC 1") 
+        
+        getProbabilitiesFromMarkovChain <- function(disc_trans, playerstart, chaserstart, statesDat, steps = 1000){
+            statelabels <- statesDat$labels
+            current_state <- statelabels
+            current_state[current_state == paste(playerstart, chaserstart - playerstart, sep = ",")] <- 1
+            current_state[current_state != "1"] <- 0
+            current_state <- as.numeric(current_state)
+            finalState<-current_state*disc_trans^steps
+            # print(finalState)
+            #get steady states 
+            results <- colSums(finalState)
+            results <- as.data.frame(results)
+            results$labels <- rownames(results)
+            statesDat <- statesDat %>% full_join(results)
+            outcomes <- statesDat %>% select(game_state, labels, results) %>% dplyr::rename(prob = results)
+            # print(outcomes)
+            probres <- outcomes %>% group_by(game_state) %>% dplyr::summarise(prob_win = sum(prob))
+            # print(probres)
+            return(probres)
+        }
+        probresStay <- getProbabilitiesFromMarkovChain(disc_trans = disc_trans, playerstart = input$playerstart, chaserstart = input$chaserstart, statesDat = statesDat)
+        probresClose <- getProbabilitiesFromMarkovChain(disc_trans = disc_trans, playerstart = input$playerstart + 1, chaserstart = input$chaserstart, statesDat = statesDat)
+        probresAway <- getProbabilitiesFromMarkovChain(disc_trans = disc_trans, playerstart = input$playerstart - 1, chaserstart = input$chaserstart, statesDat = statesDat)
+        
+        probresStay <- probresStay %>% mutate(position = "Stayed")
+        probresClose <- probresClose %>% mutate(position = "Closer to Chaser")
+        probresAway <- probresAway %>% mutate(position = "Further from Chaser")
+        # print(probresClose)
+        probres <- probresStay %>% bind_rows(probresAway) %>% bind_rows(probresClose) %>% filter(game_state != "playing")
+        probres
+    })
+    
+    output$chasetable <- renderDataTable({
+        probresstay <- chaseprobability()
+        probrescloser <- chaseprobabilitycloser()
+        probresaway <- chaseprobabilityaway()
+        probresstay <- probresstay %>% filter(position == "Stayed")
+        probrescloser <- probrescloser %>% filter(position == "Closer to Chaser")
+        probresaway <- probresaway %>% filter(position == "Further from Chaser")
+        probres <- probresstay %>% bind_rows(probresaway) %>% bind_rows(probrescloser)
+        
+        probres$prob_win <- round(probres$prob_win, 3)
+        probres <- probres %>% filter(game_state == "win")
+        DT::datatable(probres)
+        
+    })   
+    output$chaseplot <-  renderPlot({
+        ggplot() + 
+            geom_bar(data = chaseprobability(), aes(x = position, y = prob_win, group = game_state, fill = game_state), stat = "identity", position = "dodge")
+    })
+    
+    output$expectedReturnsHist <- renderPlot({
+        probres <- chaseprobability()
+        # print(probres)
+        expectedreturns <- data.frame(value = input$moneystay, multiplier_close = seq(0.1, 8, 0.1), multiplier_away = seq(0.01, 0.8, 0.01))
+        expectedreturns$stayP <- probres$prob_win[probres$position == "Stayed" & probres$game_state == "win"]
+        expectedreturns$awayP <- probres$prob_win[probres$position == "Further from Chaser" & probres$game_state == "win"]
+        expectedreturns$closeP <- probres$prob_win[probres$position == "Closer to Chaser" & probres$game_state == "win"]
+
+        expectedreturns <- expectedreturns %>% mutate(stay = value*stayP)
+        expectedreturns <- expectedreturns %>% mutate(away = value*awayP*multiplier_away)
+        expectedreturns <- expectedreturns %>% mutate(close = value*closeP*multiplier_close)
+        # print(expectedreturns)
+        ggplot() + 
+            geom_line(data = expectedreturns, aes(x = multiplier_close, y =  stay), color = "red") + 
+            geom_line(data = expectedreturns, aes(x = multiplier_close, y =  away), color = "blue") + 
+            geom_line(data = expectedreturns, aes(x = multiplier_close, y =  close), color = "green")
+    })
+    output$expectedReturnsOffer <- renderPlot({
+        probresstay <- chaseprobability()
+        probrescloser <- chaseprobabilitycloser()
+        probresaway <- chaseprobabilityaway()
+        probresstay <- probresstay %>% filter(position == "Stayed")
+        probrescloser <- probrescloser %>% filter(position == "Closer to Chaser")
+        probresaway <- probresaway %>% filter(position == "Further from Chaser")
+        probres <- probresstay %>% bind_rows(probresaway) %>% bind_rows(probrescloser)
+        
+        winstay <- as.numeric(probres$prob_win[probres$position == "Stayed" & probres$game_state == "win"])
+        winaway <- as.numeric(probres$prob_win[probres$position == "Further from Chaser" & probres$game_state == "win"])
+        winclose <-  as.numeric(probres$prob_win[probres$position == "Closer to Chaser" & probres$game_state == "win"])
+        # print(winstay)
+        # print(winaway)
+        # print(winclose)
+        # print(input$moneystay)
+        # print(input$moneycloser)
+        # print(input$moneyaway)
+        # print(probres)
+        expectedreturns <- data.frame(value = c(input$moneystay, input$moneyaway, input$moneycloser), winprob = c(winstay, winaway, winclose), group = c("stay", "away from chaser", "closer to chaser"))
+        # print(expectedreturns)
+        
+        expectedreturns <- expectedreturns %>% mutate(winvalue = value*winprob)
+        ggplot() + 
+            geom_bar(data = expectedreturns, aes(x = group, y =  winvalue), stat = "identity") 
+    })
+    output$chanceByPos <- renderDataTable({
+        probres <- chaseprobabilityByPosition()
+
+        
+        # probres$prob_win <- round(probres$prob_win, 3)
+        # probres <- probres %>% filter(game_state == "win")
+        DT::datatable(probres)
+    })
+}
+
+
+
+# Run the application 
+shinyApp(ui = ui, server = server)
